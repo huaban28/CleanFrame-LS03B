@@ -23,6 +23,8 @@ jobs:
           source = Path('.bootstrap-upstream')
           names = subprocess.check_output(['git','-C',str(source),'ls-files','-z']).decode().split('\0')
           for name in filter(None,names):
+              if name.startswith('.github/workflows/'):
+                  continue
               relative = Path(name)
               if relative.is_absolute() or '..' in relative.parts or '.git' in relative.parts:
                   raise SystemExit('Unsafe source path')
@@ -31,7 +33,6 @@ jobs:
                   target.parent.mkdir(parents=True,exist_ok=True)
                   shutil.copyfile(source / relative,target)
           PY
-          rm .github/workflows/import-reviewed-source.yml
           git add --all -- . ':!.bootstrap-upstream'
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Import pinned CleanFrame source and preserve reviewed LS03B adaptations'
           git push origin HEAD:main
