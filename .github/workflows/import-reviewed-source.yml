@@ -1,0 +1,38 @@
+name: Import reviewed upstream source once
+on:
+  push:
+    paths: ['.github/workflows/import-reviewed-source.yml']
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: nthnclrk/CleanFrame
+          ref: 845f332d083502fab39be49869052966103b564a
+          path: .bootstrap-upstream
+          persist-credentials: false
+      - name: Import missing tracked source without overwriting adaptations
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil, subprocess
+          source = Path('.bootstrap-upstream')
+          names = subprocess.check_output(['git','-C',str(source),'ls-files','-z']).decode().split('\0')
+          for name in filter(None,names):
+              relative = Path(name)
+              if relative.is_absolute() or '..' in relative.parts or '.git' in relative.parts:
+                  raise SystemExit('Unsafe source path')
+              target = Path(name)
+              if not target.exists():
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  shutil.copyfile(source / relative,target)
+          PY
+          rm .github/workflows/import-reviewed-source.yml
+          git add --all -- . ':!.bootstrap-upstream'
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Import pinned CleanFrame source and preserve reviewed LS03B adaptations'
+          git push origin HEAD:main
+

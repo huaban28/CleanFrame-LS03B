@@ -1,0 +1,31 @@
+using System;
+using System.IO;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text.Json;
+partial class Program {
+ const string Original="@@ORIGINAL_HOME@@", Target="@@LAUNCHER_APP_ID@@";
+ [DllImport("libcapi-appfw-app-operation-tv.so.0")] static extern int app_operation_set_current_app(string op,string app);
+ [DllImport("libvconf.so.0")] static extern IntPtr vconf_get_str(string key);
+ [DllImport("libvconf.so.0")] static extern int vconf_get_int(string key,out int value);
+ [DllImport("libvconf.so.0")] static extern int vconf_set_str(string key,string value);
+ static string HomePreference(){IntPtr p=vconf_get_str("db/appfw/home_appid");if(p==IntPtr.Zero)throw new Exception("Cannot read Home preference");try{return Marshal.PtrToStringAnsi(p);}finally{free(p);}}
+ static void SetHomePreference(string value){int rc=vconf_set_str("db/appfw/home_appid",value);if(rc!=0||HomePreference()!=value)throw new Exception("Home preference write/readback failed: "+rc);}
+ static void RestorePair(){string home=HomePreference();if(home!=Original&&home!=Target)throw new Exception("Unexpected Home preference; stopping restore");try{RequireState(Original);}catch{RequireState(Target);}int rc=app_operation_set_current_app(Op,Original);if(rc!=0)throw new Exception("Operation restore failed: "+rc);SetHomePreference(Original);RequireState(Original);WaitForOriginalPreferences();}
+ static string Preferences(string expectedHome=Original){var values=new Dictionary<string,string>();foreach(string key in new[]{"db/appfw/home_appid","db/appfw/startup_appid","db/appfw/booting_appid_backup","db/first_screen/type"}){IntPtr p=vconf_get_str(key);if(p==IntPtr.Zero)throw new Exception("Preference unreadable: "+key);try{values[key]=Marshal.PtrToStringAnsi(p);}finally{free(p);}if(values[key]!=(key=="db/appfw/home_appid"?expectedHome:Original))throw new Exception("Original preferences changed: "+key);}int v;if(vconf_get_int("db/menu/smart_hub/ontvsetting/auto_start",out v)!=0||v!=1)throw new Exception("Autostart differs from baseline");return JsonSerializer.Serialize(values);}
+ static void WaitForOriginalPreferences(){Exception last=null;for(int i=0;i<50;i++){try{Preferences();return;}catch(Exception e){last=e;System.Threading.Thread.Sleep(200);}}throw new Exception("Original preferences have not settled after 10 seconds; run read-only inspection",last);}
+ static void RequireState(string expected){
+  foreach(object value in new[]{Native(),Aul()})using(var doc=JsonDocument.Parse(JsonSerializer.Serialize(value))){var r=doc.RootElement;if(r.GetProperty("ReturnCode").GetInt32()!=0||r.GetProperty("Value").GetString()!=expected)throw new Exception("Native Home getters do not match expected assignment");}
+  int i=0;foreach(string path in new[]{"/opt/dbspace/user/5001/.appsvc.db","/opt/dbspace/.appsvc.db","/opt/dbspace/user/901/.appsvc.db"})using(var doc=JsonDocument.Parse(JsonSerializer.Serialize(Rows(path)))){var r=doc.RootElement;if(i==2){if(!r.TryGetProperty("Exists",out var exists)||exists.GetBoolean())throw new Exception("SDK database scope differs");}else{if(r.GetProperty("StepReturn").GetInt32()!=101)throw new Exception("Operation database query incomplete");var rows=r.GetProperty("Rows");if(rows.GetArrayLength()!=(i==0?1:0))throw new Exception("Unexpected operation rows");if(i==0){var row=rows[0];if(row.GetArrayLength()!=4||row[0].GetString()!=Op||row[1].GetString()!=expected||row[2].GetString()!="NULL"||row[3].GetString()!="NULL")throw new Exception("Operation row differs from reviewed baseline");}}i++;}
+ }
+ static void Trial(string[] args,Dictionary<string,string> hashes){
+  if(args.Length!=1||(args[0]!="preflight"&&args[0]!="apply"&&args[0]!="restore"))throw new Exception("Expected preflight, apply or restore");
+  if(hashes["/usr/lib/libcapi-appfw-app-operation-tv.so.0"]!="28e86fd9a2de5569cc0046790afe97ff9ce33ed7bdde3d7d70b0699325cc6e38"||hashes["/usr/lib/libaul.so.0"]!="27525cf7c1f29160210e38956806feec262a349417bab9ab3ec5c3c390af50f5")throw new Exception("Reviewed library hashes changed");
+  if(!Directory.Exists("/opt/usr/apps/@@LAUNCHER_PACKAGE_ID@@"))throw new Exception("Launcher missing");
+  if(args[0]=="preflight"){RequireState(Original);Preferences();Console.WriteLine("FRAME_HOME_PREFLIGHT_OK");return;}
+  if(args[0]=="restore"){RestorePair();Console.WriteLine("FRAME_HOME_PAIR_RESTORED");return;}
+  RequireState(Original);Preferences();
+  try{int rc=app_operation_set_current_app(Op,Target);if(rc!=0)throw new Exception("Assignment failed: "+rc);SetHomePreference(Target);RequireState(Target);Preferences(Target);Console.WriteLine("FRAME_HOME_PAIR_APPLIED");Console.WriteLine("FRAME_HOME_PREFERENCES="+Preferences(Target));}
+  catch(Exception applyError){try{RestorePair();Console.WriteLine("FRAME_HOME_PAIR_ROLLED_BACK");}catch(Exception recoveryError){throw new Exception("RECOVERY_REQUIRES_ATTENTION: "+recoveryError.Message,applyError);}throw;}
+ }
+}

@@ -1,0 +1,28 @@
+using System;
+using System.IO;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text.Json;
+partial class Program {
+ const string Op="http://tizen.org/appcontrol/operation/main";
+ [DllImport("libc")] static extern uint getuid();
+ [DllImport("libc")] static extern void free(IntPtr p);
+ [DllImport("libcapi-appfw-app-operation-tv.so.0")] static extern int app_operation_get_current_app(string op,out IntPtr app);
+ [DllImport("libbundle.so.0")] static extern IntPtr bundle_create();
+ [DllImport("libbundle.so.0")] static extern void bundle_free(IntPtr b);
+ [DllImport("libaul.so.0")] static extern int aul_svc_set_operation(IntPtr b,string op);
+ [DllImport("libaul.so.0")] static extern int aul_get_default_app(IntPtr b,out IntPtr app);
+ [DllImport("libsqlite3.so.0")] static extern int sqlite3_open_v2(string path,out IntPtr db,int flags,IntPtr vfs);
+ [DllImport("libsqlite3.so.0")] static extern int sqlite3_prepare_v2(IntPtr db,string sql,int n,out IntPtr stmt,IntPtr tail);
+ [DllImport("libsqlite3.so.0")] static extern int sqlite3_step(IntPtr stmt);
+ [DllImport("libsqlite3.so.0")] static extern IntPtr sqlite3_column_text(IntPtr stmt,int col);
+ [DllImport("libsqlite3.so.0")] static extern int sqlite3_finalize(IntPtr stmt);
+ [DllImport("libsqlite3.so.0")] static extern int sqlite3_close(IntPtr db);
+ static object PointerResult(int rc,IntPtr p){string value=null;if(p!=IntPtr.Zero){try{value=Marshal.PtrToStringAnsi(p);}finally{free(p);}}return new{ReturnCode=rc,Value=value};}
+ static object Native(){IntPtr p;int rc=app_operation_get_current_app(Op,out p);return PointerResult(rc,p);}
+ static object Aul(){IntPtr b=bundle_create();if(b==IntPtr.Zero)throw new Exception("bundle_create failed");try{int rc=aul_svc_set_operation(b,Op);if(rc!=0)return new{OperationReturn=rc};IntPtr p;rc=aul_get_default_app(b,out p);return PointerResult(rc,p);}finally{bundle_free(b);}}
+ static object Rows(string path){if(!File.Exists(path))return new{Path=path,Exists=false};IntPtr db;int rc=sqlite3_open_v2(path,out db,1,IntPtr.Zero);if(rc!=0){if(db!=IntPtr.Zero)sqlite3_close(db);return new{Path=path,OpenReturn=rc};}try{IntPtr stmt;rc=sqlite3_prepare_v2(db,"SELECT operation,pkg_name,mime_type,uri FROM appsvc WHERE operation='"+Op+"';",-1,out stmt,IntPtr.Zero);if(rc!=0)return new{Path=path,PrepareReturn=rc};try{var rows=new List<string[]>();while((rc=sqlite3_step(stmt))==100){if(rows.Count>=32)throw new Exception("Too many operation rows");var row=new string[4];for(int i=0;i<4;i++)row[i]=Marshal.PtrToStringAnsi(sqlite3_column_text(stmt,i));rows.Add(row);}return new{Path=path,StepReturn=rc,Rows=rows};}finally{sqlite3_finalize(stmt);}}finally{sqlite3_close(db);}}
+ static object Safe(Func<object> f){try{return f();}catch(Exception e){return new{Error=e.GetType().Name,Message=e.Message};}}
+ static int Main(string[] args){try{if(IntPtr.Size!=4||getuid()!=901)throw new Exception("Expected ARM32 SDK user");if(!File.ReadAllText("/etc/prd_info.ini").Contains("Version=T-PTMAKUC-1720.7;"))throw new Exception("Wrong firmware");var hashes=new Dictionary<string,string>();foreach(string path in new[]{"/usr/lib/libcapi-appfw-app-operation-tv.so.0","/usr/lib/libaul.so.0"})using(var sha=SHA256.Create())using(var file=File.OpenRead(path))hashes[path]=BitConverter.ToString(sha.ComputeHash(file)).Replace("-","").ToLowerInvariant();if(args.Length>0) Trial(args,hashes);Console.WriteLine("FRAME_NATIVE_QUERY="+JsonSerializer.Serialize(new{Uid=getuid(),Native=Safe(Native),Aul=Safe(Aul),Databases=new[]{Safe(()=>Rows("/opt/dbspace/user/5001/.appsvc.db")),Safe(()=>Rows("/opt/dbspace/.appsvc.db")),Safe(()=>Rows("/opt/dbspace/user/901/.appsvc.db"))},Hashes=hashes}));return 0;}catch(Exception e){Console.WriteLine("FRAME_NATIVE_QUERY_ERROR="+e);return 1;}}
+}
